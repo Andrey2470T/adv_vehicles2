@@ -51,44 +51,46 @@ vehicles.register_vehicle("bmw", {
         mass = 2000,
         bounding_box = {-1.7, -0.5, -4.5, 1.6, 2.2, 2.7},
         visual = "mesh",
-        visual_size = {x=3.5, y=3.5, z=3.5},
         mesh = "bmw_fw.b3d",
         textures = {"bmw.png"},
         seats = {
                  {
-                  ["pos"] = {x=-2.5, y=-1.5, z=-3.0},
-                  ["type"] = "driver"
+                  ["pos"] = {x=5.0, y=0, z=-8.0},
+                  ["type"] = "driver",
+                  ["getout_coords"] = {x=-3.0, y=0, z=0}
                  },
                  {
-                  ["pos"] = {x=2.5, y=-1.5, z=-3.0},
-                  ["type"] = "passenger"
+                  ["pos"] = {x=-5.0, y=0, z=-8.0},
+                  ["type"] = "passenger",
+                  ["getout_coords"] = {x=3.0, y=0, z=0}
                  },
                  {
-                  ["pos"] = {x=0.0, y=-1.5, z=5.5},
-                  ["type"] = "passenger"
+                  ["pos"] = {x=0.0, y=0, z=5.5},
+                  ["type"] = "passenger",
+                  ["getout_coords"] = {x=0, y=0, z=6.0}
                  }
         },
         traction_force = 5000,
         wheels = {
                   {
                    ["type"] = "front",
-                   ["pos"] = {x=-3.1, y=-0.05, z=-7.55},
+                   ["pos"] = {x=-3.1*3.55, y=3.05, z=-7.55*3.55},
                    ["radius"] = 0.5
                   },
                   {
                    ["type"] = "front",
-                   ["pos"] = {x=2.9, y=-0.05, z=-7.55},
+                   ["pos"] = {x=2.9*3.55, y=3.05, z=-7.55*3.55},
                    ["rot"] = {x=0, y=180, z=0},
                    ["radius"] = 0.5
                   },
                   {
                    ["type"] = "rear",
-                   ["pos"] = {x=-3.1, y=-0.05, z=4.85},
+                   ["pos"] = {x=-3.1*3.55, y=3.05, z=4.85*3.45},
                    ["radius"] = 0.5
                   },
                   {
                    ["type"] = "rear",
-                   ["pos"] = {x=2.9, y=-0.05, z=4.85},
+                   ["pos"] = {x=2.9*3.55, y=3.05, z=4.85*3.45},
                    ["rot"] = {x=0, y=180, z=0},
                    ["radius"] = 0.5
                   }
@@ -103,7 +105,6 @@ vehicles.register_vehicle("bmw", {
 },  {
     obj = {
         visual = "mesh",
-        visual_size = {x=1, y=1, z=1},
         mesh = "bmw_wheel.b3d",
         textures = {"bmw.png"}
     },
@@ -114,4 +115,37 @@ vehicles.register_vehicle("bmw", {
 }  
 )
 	
+minetest.register_entity(MOD_NAME .. ":dummy_driver", {
+    hp_max = 20,
+    visual = "mesh",
+    mesh = "driver.b3d",
+    textures = {"character.png"},
+    --collisionbox = {-0.3, 0.0, -0.3, 0.3, 1.7, 0.3},
+    --[[on_activate = function(self, staticdata, dtime_s)
+    end,]]
+    on_punch = function(self, puncher, time_from_last_punch, tool_capabilities, dir, damage)
+        self.attached_player:set_hp(self.attached_player:get_hp()-damage)
+    end,
+    on_death = function(self, killer)
+        self.attached_player:set_hp(0)
+        vehicles.get_out(self.object:get_attach():get_luaentity(), self)
+    end
+})
+
+minetest.register_entity(MOD_NAME .. ":dummy_passenger", {
+    hp_max = 20,
+    visual = "mesh",
+    mesh = "passenger.b3d",
+    textures = {"character.png"},
+    --collisionbox = {-0.3, 0.0, -0.3, 0.3, 1.7, 0.3},
+    --[[on_activate = function(self, staticdata, dtime_s)
+    end,]]
+    on_punch = function(self, puncher, time_from_last_punch, tool_capabilities, dir, damage)
+        self.attached_player:set_hp(self.attached_player:get_hp()-damage)
+    end,
+    on_death = function(self, killer)
+        self.attached_player:set_hp(0)
+        vehicles.get_out(self.object:get_attach():get_luaentity(), self)
+    end
+})
 	

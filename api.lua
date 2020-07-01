@@ -2,22 +2,29 @@
 --                Advanced Vehicles II API by Andrey01
 -----‐---------------------------------------------------------------------------------------------
 
+--GLOBAL TABLE
 vehicles = {}
 
-gravity = -9.8
+---------------------------------------------------------------------------
+--   Constants
+---------------------------------------------------------------------------
+vehicles.gravity = -9.8     -- gravity constant
 
-local showed_seats_fspecs = {}     --  pair: ["playername"] and objectref
+vehicles.air_rfac = 0.3    -- air resistance factor
 
-local ngroups_friction_coefs = {   -- friction coefficients of some groups of nodes.
+
+---------------------------------------------------------------------------
+--   Nested Dynamic Tables
+---------------------------------------------------------------------------
+vehicles.showed_seats_fspecs = {}     --  pair: ["playername"] and objectref
+
+vehicles.ngroups_friction_coefs = {   -- friction coefficients of some groups of nodes.
 	["sand"] = 1.5,
 	["soil"] = 0.6,
 	["snowy"] = 0.9,
 	["slippery"] = 0.1,
     ["default"] = 0.8
 }
-
--- Air resistance force is calculated for now only along the horizontal plane!
-local air_rcoef = 0.3       -- air resistance coefficient
 
 
 -----‐---------------------------------------------------------------------
@@ -28,7 +35,7 @@ vehicles.set_gravity = function(self)
      local acc = obj:get_acceleration()
      local vel = obj:get_velocity()
      local m = minetest.registered_entities[self.name].mass
-     obj:set_acceleration({x=acc.x, y=gravity, z=acc.z}) 
+     obj:set_acceleration({x=acc.x, y=vehicles.gravity, z=acc.z}) 
 end
 
 --[[ Registers new vehicle (base and wheel)
@@ -47,7 +54,7 @@ vehicles.register_vehicle = function(name, base_props, wheel_props)
 	mesh = (base_props.obj.visual == "mesh" and base_props.obj.mesh),
 	textures = base_props.obj.textures or {""},
     use_texture_alpha = base_props.obj.use_texture_alpha,
-	seats = base_props.obj.seats,       -- table fields: {["is_busy"] = playername, ["pos"]  = position, ["rot"] = rotation, ["type"] = ("driver" or "passenger"), ["model"] = <name>}
+	seats = base_props.obj.seats,       -- table fields: {["is_busy"] = playername, [dplayer_obj] = ObjectRef, ["pos"]  = position, ["rot"] = rotation, ["getout_coords"] = coords from seat, ["type"] = ("driver" or "passenger"), ["model"] = <name>}
          --ctrl_vals = base_props.ctrl_vals,     -- table fields: {["move"] = float (acc_len), ["turn"] = float (degs)}
 	traction_force = base_props.obj.traction_force or 5000,    -- in Neutons
 	wheels = base_props.obj.wheels,      -- table fields: {["type"] = ("front" or "rear"), ["pos"] = position, ["rot"] = rotation, ["radius"] = wheel radius}
@@ -55,7 +62,7 @@ vehicles.register_vehicle = function(name, base_props, wheel_props)
     stepheight = base_props.obj.stepheight or 0.5,
 	on_activate = function(self, staticdata, dtime_s)
 		self.seats = table.copy(base_props.obj.seats)
-        
+        local vehpos = self.object:get_pos()
         for i, seat in ipairs(self.seats) do
             seat.rot = seat.rot or {x=0, y=0, z=0}
             seat.radius = seat.radius or 0.5
@@ -74,10 +81,9 @@ vehicles.register_vehicle = function(name, base_props, wheel_props)
                 self.player_models.passenger = base_props.obj.player_model_def.passenger.name
             end
         end]]
-		local rel_vehpos = self.object:get_pos()
 		local vehrot = self.object:get_rotation()
 		for i, whl in ipairs(base_props.obj.wheels) do
-			local whl_obj = minetest.add_entity({x=rel_vehpos.x+whl.pos.x, y=rel_vehpos.y+whl.pos.y, z=rel_vehpos.z+whl.pos.z}, MOD_NAME .. ":" .. name .. "_wheel")
+			local whl_obj = minetest.add_entity({x=vehpos.x+whl.pos.x, y=vehpos.y+whl.pos.y, z=vehpos.z+whl.pos.z}, MOD_NAME .. ":" .. name .. "_wheel")
 			whl_obj:set_attach(self.object,  "", whl.pos, whl.rot or {0, 0, 0})
 			self.wheels[i] = {object=whl_obj, type=whl.type, pos=whl.pos, rot=whl.rot or {0, 0, 0}, radius=whl.radius}
 		end
@@ -85,32 +91,75 @@ vehicles.register_vehicle = function(name, base_props, wheel_props)
 		--self.acc_v2d = vehicles.v2d_coords(base_props.traction_force/base_props.mass, vehrot.y)        -- keep own vehicle 2d acceleration along horizontal plane that doesn`t depend to external impacts
 	end,
 	on_step = function(self, dtime)
+        local drv_name = self.seats[vehicles.get_driver_i(self)].is_busy
+        if drv_name then
+            local player = minetest.get_player_by_name(drv_name)
+            local ctrls = player:get_player_control()
+            local entity_def = minetest.registered_entities[self.name]
+            if ctrls.up then
+                self.tracf_dir = entity_def.traction_force
+            else
+                self.tracf_dir = 0
+            end
+            if ctrls.down then
+                self.tracf_dir = -entity_def.traction_force
+            elseif not ctrls.down and not ctrls.up then
+                self.tracf_dir = 0
+            end
+        end
+        local yaw = self.object:get_yaw()
+        local tdir_v = vehicles.v2d_coords(self.tracf_dir, yaw)
+        tdir_v.y = 0
 		local max_fcoef = vehicles.max_fric_coef(self)
 		local edef = minetest.registered_entities[self.name]
-		local acc = self.object:get_acceleration()
-		local sf_fforce = vehicles.surface_fric_force(max_fcoef, edef.mass, acc.y*edef.mass)
-		local vel = self.object:get_velocity()
-		local v2d_vl = vehicles.v2d_length(vel)
-		local air_rforce = vehicles.air_resist_force(v2d_vl)
-		vehicles.on_move(self)
-		if v2d_vl == 0 then self.tracf_dir = 0 sf_fforce = 0 end
-		if self.tracf_dir > 0 then sf_fforce = -sf_fforce air_rforce = -air_rforce end
+        local v2d_v = self.object:get_velocity()
+        local v2d_vl = vector.length(v2d_v)
+        local unit_v2d_v = vector.divide(v2d_v, v2d_vl)
+        unit_v2d_v = vehicles.check_for_nan(unit_v2d_v)
+                
+        local tdir_sign = vehicles.get_sign(self.tracf_dir)
+        local sf_fforce = (math.abs(vehicles.gravity)*edef.mass)*max_fcoef*(-tdir_sign)   -- surface friction force
+        local sf_fforce_v = vector.multiply(unit_v2d_v, sf_fforce)
+        sf_fforce_v = vehicles.check_for_nan(sf_fforce_v)
+		local air_rforce = v2d_vl^2 * vehicles.air_rfac * (-tdir_sign)          -- air resistance force
+        local air_rforce_v = vector.multiply(unit_v2d_v, air_rforce)  
+        air_rforce_v = vehicles.check_for_nan(air_rforce_v)
+        --[[local sf_fforce_sign = vehicles.get_sign(sf_fforce)
+		if tdir_sign == sf_fforce_sign then 
+            sf_fforce = -sf_fforce 
+            air_rforce = -air_rforce 
+        end]]
 		
-		local acc_sum = (self.tracf_dir + sf_fforce + air_rforce)/edef.mass
-		local acc2d = vehicles.v2d_coords(acc_sum, self.object:get_yaw())
-        minetest.debug(dump(acc2d))
-		self.object:set_acceleration({x=acc2d.x, y=acc.y, z=acc2d.z})
+        --[[minetest.debug("tdir_v: " .. dump(tdir_v))
+        minetest.debug("sf_fforce: " .. sf_fforce)
+        minetest.debug("sf_fforce_v: " .. dump(sf_fforce_v))
+        minetest.debug("air_rforce: " .. dump(air_rforce))
+        minetest.debug("air_rforce_v: " .. dump(air_rforce_v))
+        minetest.debug("tdir_v+sf_fforce_v: " .. dump(vector.add(tdir_v, sf_fforce_v)))
+        minetest.debug("(tdir_v+sf_fforce_v)+air_rforce_v: " .. dump(vector.add(vector.add(tdir_v, sf_fforce_v), air_rforce_v)))
+        minetest.debug("((tdir_v+sf_fforce_v)+air_rforce_v)/edef.mass: " .. dump(vector.divide(vector.add(vector.add(tdir_v, sf_fforce_v), air_rforce_v), edef.mass)))]]
+        local acc = vector.divide(vector.add(vector.add(tdir_v, sf_fforce_v), air_rforce_v), edef.mass)
+		--local acc_sum = (self.tracf_dir + sf_fforce + air_rforce)/edef.mass
+        --minetest.debug(acc_sum)
+		--local acc2d = vehicles.v2d_coords(acc_sum, self.object:get_yaw())
+        --minetest.debug(dump(acc2d))
+        --[[v2d_vl = (sf_fforce_sign < 0 and -v2d_vl or v2d_vl)
+        local new_vel = vehicles.v2d_coords(v2d_vl, self.object:get_yaw())
+        new_vel.y = v2d_v.y
+        self.object:set_velocity(new_vel)]]
+        self.object:set_acceleration(acc)
+		--self.object:set_acceleration({x=acc2d.x, y=self.object:get_acceleration().y, z=acc2d.z})
 		
 		for i, d in ipairs(self.wheels) do
-			d.object:set_rotation(vehicles.calc_angle_vel(vel, d.radius))
+			d.object:set_rotation({x=vehicles.calc_angle_vel(self.object:get_velocity(), d.radius)*dtime, y=0, z=0})
 		end
 		
 	end,
 	on_death = function(self, killer)
 		for i, sdata in ipairs(self.seats) do
-			vehicles.get_out(self, sdata.is_busy and minetest.get_player_by_name(sdata.is_busy))
+			vehicles.get_out(self, sdata.dplayer_obj:get_luaentity(), i)
 		end
-		for n, obj in pairs(showed_seats_fspecs) do
+		for n, obj in pairs(vehicles.showed_seats_fspecs) do
 			if obj == self.object then
 				vehicles.close_seats_formspec(self, n, MOD_NAME .. ":vehicle_seats")
 			end
@@ -191,7 +240,7 @@ vehicles.show_seats_formspec = function(self, formspec_name, playername)
             (is_player_sit and "button[" .. wsize_x/2 - sbut_size.x/2 .. "," .. (wsize_y - (2.5/4*3)) .. ";4,1.5;get_up;" .. minetest.formspec_escape("Get up") .. "]" or "")
     
     
-    showed_seats_fspecs[playername] = self.object
+    vehicles.showed_seats_fspecs[playername] = self.object
     minetest.show_formspec(playername, formspec_name, formspec)
 end
     
@@ -292,54 +341,71 @@ end]]
 end]]
       
 vehicles.sit = function(self, player, seat_id)     -- seat_id is an id of a seat table of 'self.seats'
-      local sel_seat = self.seats[seat_id]
-      local plname = player:get_player_name()
-      if type(sel_seat.is_busy) == "string" and sel_seat.is_busy ~= plname then
-            minetest.chat_send_player(plname, "Seat #" .. seat_id .. " is busy by " .. sel_seat.is_busy .. "!")
-            return 
-      end
+    local sel_seat = self.seats[seat_id]
+    local plname = player:get_player_name()
+    if type(sel_seat.is_busy) == "string" and sel_seat.is_busy ~= plname then
+        minetest.chat_send_player(plname, "Seat #" .. seat_id .. " is busy by " .. sel_seat.is_busy .. "!")
+        return 
+    end
       
-      local cur_seat = vehicles.is_player_sit(player)
-      if cur_seat then
-          self.seats[cur_seat.seat_id].is_busy = nil
-      end
+    local cur_seat_i = vehicles.is_player_sit(player)
+    if cur_seat_i then
+        vehicles.get_out(self, self.seats[cur_seat_i].dplayer_obj:get_luaentity(), cur_seat_i)
+    end
       
-      sel_seat.is_busy = player:get_player_name()
-      local plmeta = player:get_meta()
-      local anim = player_api.get_animation(player)
-      local pl_mdefs = minetest.registered_entities[self.name].player_mdefs
+    sel_seat.is_busy = player:get_player_name()
+    local dummy_player
+    if sel_seat.type == "driver" then
+        minetest.debug("adding_dummy_driver...")
+        dummy_player = minetest.add_entity(vehicles.convert_pos_to_absolute(self.object:get_pos(), sel_seat.pos), MOD_NAME .. ":dummy_driver")
+        minetest.debug("added_dummy_driver!")
+    elseif sel_seat.type == "passenger" then
+        dummy_player = minetest.add_entity(vehicles.convert_pos_to_absolute(self.object:get_pos(), sel_seat.pos), MOD_NAME .. ":dummy_passenger")
+    end
+      
+        
+    sel_seat.dplayer_obj = dummy_player
+    dummy_player:set_attach(self.object, "", sel_seat.pos, {x=0, y=180, z=0})
+    minetest.debug("attaching_dummy_player...")
+    player:set_attach(dummy_player, "", {x=0, y=0, z=0}, {x=0, y=0, z=0})
+    player:set_properties({is_visible=false})
+    minetest.debug("dummy_player_attached!")
+    local dplayer_self = dummy_player:get_luaentity()
+    dplayer_self.attached_player = player
+    player:set_look_horizontal(self.object:get_yaw()+180)
+      --local anim = player_api.get_animation(player)
+      --[[local pl_appear = minetest.registered_entities[self.name].player_sit_appearance
       local pl_data = {}
-      if pl_mdefs then
-            if sel_seat.type == "driver" and pl_mdefs.driver then 
-                pl_data.prev_model = anim.model
-                pl_data.prev_anim = anim.animation
-                player_api.set_model(player, pl_mdefs.driver.model_name)
-            elseif sel_seat.type == "passenger" and pl_mdefs.passenger then
-                pl_data.prev_model = anim.model
-                pl_data.prev_anim = anim.animation
-                player_api.set_model(player, pl_mdefs.passenger.model_name)
+      if pl_appear then
+            local old_mesh = player:get_properties().mesh
+            local old_anim = table.pack(player:get_animation()) 
+            if sel_seat.type == "driver" and pl_appear.driver then 
+                pl_data.prev_model = old_mesh 
+                pl_data.prev_anim = old_anim
+                dummy_player:set_properties({mesh=pl_appear.driver.mesh})
+                dummy_player:set_animation(table.unpack(pl_appear.driver.animation))
+            elseif sel_seat.type == "passenger" and pl_appear.passenger then
+                pl_data.prev_model = old_mesh
+                pl_data.prev_anim = old_anim
+                dummy_player:set_properties({mesh=pl_appear.passenger})
+                dummy_player:set_animation(table.unpack(pl_appear.passenger.animation))
             end
-      end
-      
-      pl_data.prev_pos = player:get_pos()
-      pl_data.prev_rot = player:get_rotation()
-      pl_data.seat_id = seat_id
-      plmeta:set_string("prev_data", minetest.serialize(pl_data))
-      player:set_attach(self.object, "", sel_seat.pos, sel_seat.rot)
-      player:set_eye_offset(sel_seat.pos, sel_seat.pos)
-      player:set_look_horizontal(self.object:get_yaw()+180)
-      player_api.player_attached[player:get_player_name()] = true
+      end]]
 end
 
-vehicles.get_out = function(self, player)
-      if not player or not self.object:get_luaentity() then 
+vehicles.get_out = function(self, dplayer, seat_id)
+      if not dplayer.object or not dplayer.attached_player or not self.object:get_luaentity() then 
             return 
       end
       
-      player:set_detach()
-      local plmeta = player:get_meta()
-      local pl_data = minetest.deserialize(plmeta:get_string("prev_data"))
-      if pl_data.prev_model then
+      
+      dplayer.object:set_detach()
+      dplayer.attached_player:set_detach()
+      dplayer.attached_player:set_properties({is_visible=true})
+      dplayer.object:remove()
+      self.seats[seat_id].is_busy = nil
+      self.seats[seat_id].dplayer_obj = nil
+     --[[ if pl_data.prev_model then
             player_api.set_model(player, pl_data.prev_model)
       end
       if pl_data.prev_anim then
@@ -347,6 +413,7 @@ vehicles.get_out = function(self, player)
       end
       local seat = self.seats[pl_data.seat_id]
       seat.is_busy = nil
+      plmeta:set_string("prev_data", "")]]
 end
       
 vehicles.on_formspec_event = function(player, formname, fields)
@@ -355,20 +422,20 @@ vehicles.on_formspec_event = function(player, formname, fields)
       end
       
       local plname = player:get_player_name()
-      local obj = showed_seats_fspecs[plname]
+      local obj = vehicles.showed_seats_fspecs[plname]
       local self = obj:get_luaentity()
       if self then
            for i, sdata in ipairs(self.seats) do
-                  local but_name = "seat_" .. i
-                  if fields[but_name] then
-                       vehicles.close_seats_formspec(self, plname, formname, "sit", i)
-                       return true
-                  end
-           end
+                local but_name = "seat_" .. i
+                if fields[but_name] then
+                    vehicles.close_seats_formspec(self, plname, formname, "sit", i)
+                    return true
+                end
            
-           if fields["get_up"] then
-                vehicles.close_seats_formspec(self, plname, formname, "get_up")
-                return true
+                if fields["get_up"] then
+                    vehicles.close_seats_formspec(self, plname, formname, "get_up", i)
+                    return true
+                end
            end
       else     --   supposed that vehicle is died while the player is viewing the formspec
            vehicles.close_seats_formspec(self, plname, formname)
@@ -376,21 +443,29 @@ vehicles.on_formspec_event = function(player, formname, fields)
 end
       
 --   Returns traction force along according direction or nil if no player as a driver or any driving keys are not pressed
-vehicles.on_move = function(self)
+--[[vehicles.on_move = function(self)
       local drv_name = self.seats[vehicles.get_driver_i(self)].is_busy
       if not drv_name then return end
-      minetest.debug("Driver is available!")
       local player = minetest.get_player_by_name(drv_name)
       local ctrls = player:get_player_control()
       local entity_def = minetest.registered_entities[self.name]
+      local v2d_vl = vehicles.v2d_length(self.object:get_velocity())
       if ctrls.up then
-           self.tracf_dir = entity_def.traction_force
+            self.tracf_dir = entity_def.traction_force
+      else
+            self.tracf_dir = 0
       end
       if ctrls.down then
-           self.tracf_dir = -entity_def.traction_force
+            self.tracf_dir = -entity_def.traction_force
+      elseif not ctrls.down and not ctrls.up then
+            self.tracf_dir = 0
       end
       
-end
+      if not ctrls.up or not ctrls.down then
+          self.tracf_dir = 0
+      end
+      
+end]]
       --[[if ctrls.up and vehicles.v2d_length(self.acc_v2d) == 0 then
            local new_acc = vector.add(acc, {x=self.acc_v2d.x, y=0, z=self.acc_v2d.z})
            self.object:set_acceleration(new_acc)
@@ -447,12 +522,28 @@ table.derive_elems = function(t, i1, i2)
     return new_t
 end
 
+--   Checks whether t[v] is nan and if yes, replaces to zero. Returns changed table 
+vehicles.check_for_nan = function(t)
+    for k, v in pairs(t) do
+        if v ~= v then
+            t[k] = 0
+        end
+    end
+    return t
+end
+
 vehicles.is_player_sit = function(player)
       local obj = player:get_attach()
       if not obj then return false end
+      local self = obj:get_attach():get_luaentity()
       
-      local prev_data = minetest.deserialize(player:get_meta():get_string("prev_data"))
-      return prev_data
+      for i, sdata in pairs(self.seats) do
+          if sdata.is_busy == player:get_player_name() then
+              return i
+          end
+      end
+      
+      return false
 end
 
 --   'seat_id' is optional
@@ -460,21 +551,28 @@ end
 vehicles.close_seats_formspec = function(self, playername, formname, action, seat_id)      
     local player = minetest.get_player_by_name(playername)
     if action == "sit" then
+        minetest.debug("close_seats_formspec")
         local is_busy = self.seats[seat_id].is_busy
         if is_busy then return end
         vehicles.sit(self, player, seat_id)
     elseif action == "get_up" then
-        vehicles.get_out(self, player)
-        local pl_meta = player:get_meta()
-        local pl_data = minetest.deserialize(pl_meta:get_string("prev_data"))
-        player:set_pos(pl_data.prev_pos)
-        player:set_rotation(pl_data.prev_rot)
-        pl_data = nil
-        pl_meta:set_string("prev_data", "")
+        minetest.debug(dump(self.seats[seat_id].dplayer_obj))
+        vehicles.get_out(self, self.seats[seat_id].dplayer_obj:get_luaentity(), seat_id)
+        local getout_coords = self.seats[seat_id].getout_coords
+        local yaw = self.object:get_yaw()
+        local pos = self.object:get_pos()
+        local player = minetest.get_player_by_name(playername)
+        local rel_getout_pos = vector.rotate(vector.add(self.seats[seat_id].pos, getout_coords), {x=0, y=self.object:get_yaw(), z=0})
+        minetest.debug(dump(pos))
+        minetest.debug(dump(rel_getout_pos))
+        player:set_pos(vehicles.convert_pos_to_absolute(pos, rel_getout_pos))
+        local rand_look = {-90, 90}
+        player:set_look_horizontal(yaw+rand_look[math.random(1, 2)])
+        
     end
       
     minetest.close_formspec(playername, formname)
-    showed_seats_fspecs[playername] = nil
+    vehicles.showed_seats_fspecs[playername] = nil
 end
             
 --   Returns index in seats table where driver data is.
@@ -497,9 +595,18 @@ end
      return (angle == 0) or (angle
 end]]
      
+-- Get sign of 'n' value
+vehicles.get_sign = function(n)
+    if n == 0 then
+        return 0 
+    end
+    return n/math.abs(n)
+end
+
 --   Calculates an angle speed (in rads) of the wheel
-vehicles.calc_angle_vel = function(vel, radius)    
-       return {x=vel.x/radius, y=vel.y/radius, z=vel.z/radius}
+vehicles.calc_angle_vel = function(vel, radius)  
+    local v_len = vector.length(vel)
+    return v_len/radius
 end
 
 --vehicles.rotate_acc_vect = function(old_acc, turn_ang)
@@ -523,8 +630,8 @@ vehicles.max_fric_coef = function(self)
               pos = vehicles.convert_pos_to_absolute(vehpos, pos)
               local undernode = minetest.get_node({x=pos.x, y=pos.y-whl.radius-0.1, z=pos.z})
               local group = vehicles.get_node_groupname(undernode.name)
-              if max_friction_coef < ngroups_friction_coefs[group] then
-                    max_friction_coef = ngroups_friction_coefs[group] 
+              if max_friction_coef < vehicles.ngroups_friction_coefs[group] then
+                    max_friction_coef = vehicles.ngroups_friction_coefs[group] 
               end
         end
         
@@ -532,8 +639,8 @@ vehicles.max_fric_coef = function(self)
 end
 
 --   Calculates a modulo of a friction force of the surface under the vehicle
-vehicles.surface_fric_force = function(fric_coef, mass, g)
-       return fric_coef*mass*-g
+vehicles.surface_fric_force = function(fric_coef, mass)
+       return fric_coef*mass*-vehicles.gravity
 end
               
               
@@ -552,7 +659,7 @@ vehicles.get_node_groupname = function(name)
       local groups = minetest.registered_nodes[name].groups
       --minetest.debug("nodename:" .. name)
       --minetest.debug("nodegroups:" .. dump(groups))
-      for group, coef in pairs(ngroups_friction_coefs) do
+      for group, coef in pairs(vehicles.ngroups_friction_coefs) do
              if groups[group] then
                   return group
              end
@@ -562,7 +669,7 @@ end
 
 --   Calculates a modulo of an air resistance force (only along horizontal plane currently)
 vehicles.air_resist_force = function(v_l)
-      return air_rcoef * math.abs(v_l)^2
+      return vehicles.air_rfac * math.abs(v_l)^2
 end
                             
                             
@@ -579,9 +686,8 @@ minetest.register_on_player_receive_fields(vehicles.on_formspec_event)
 minetest.register_on_leaveplayer(function(obj, timed_out)
         local is_player_sit = vehicles.is_player_sit(obj:get_luaentity())
         if is_player_sit then
-                local parent = obj:get_attach()
-                local self = parent:get_luaentity()
-                self.seats[is_player_sit.seat_id].is_busy = nil
+                local self = obj:get_attach():get_attach():get_luaentity()
+                vehicles.get_out(self, self.dplayer_obj:get_luaentity(), is_player_sit)
         end
 end)
       
