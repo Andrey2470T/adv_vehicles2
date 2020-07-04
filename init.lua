@@ -48,7 +48,7 @@ end)]]
 vehicles.register_vehicle("bmw", {
     obj = {
         vehicle_type = "ground",
-        mass = 2000,
+        mass = 4000,
         bounding_box = {-1.7, -0.5, -4.5, 1.6, 2.2, 2.7},
         visual = "mesh",
         mesh = "bmw_fw.b3d",
@@ -57,12 +57,12 @@ vehicles.register_vehicle("bmw", {
                  {
                   ["pos"] = {x=5.0, y=0, z=-8.0},
                   ["type"] = "driver",
-                  ["getout_coords"] = {x=-3.0, y=0, z=0}
+                  ["getout_coords"] = {x=-1.0, y=0, z=0}
                  },
                  {
                   ["pos"] = {x=-5.0, y=0, z=-8.0},
                   ["type"] = "passenger",
-                  ["getout_coords"] = {x=3.0, y=0, z=0}
+                  ["getout_coords"] = {x=1.0, y=0, z=0}
                  },
                  {
                   ["pos"] = {x=0.0, y=0, z=5.5},
@@ -70,7 +70,7 @@ vehicles.register_vehicle("bmw", {
                   ["getout_coords"] = {x=0, y=0, z=6.0}
                  }
         },
-        traction_force = 5000,
+        traction_force = 30000,
         wheels = {
                   {
                    ["type"] = "front",
@@ -120,16 +120,17 @@ minetest.register_entity(MOD_NAME .. ":dummy_driver", {
     visual = "mesh",
     mesh = "driver.b3d",
     textures = {"character.png"},
+    static_save = false,
     --collisionbox = {-0.3, 0.0, -0.3, 0.3, 1.7, 0.3},
     --[[on_activate = function(self, staticdata, dtime_s)
     end,]]
-    on_punch = function(self, puncher, time_from_last_punch, tool_capabilities, dir, damage)
+    --[[on_punch = function(self, puncher, time_from_last_punch, tool_capabilities, dir, damage)
         self.attached_player:set_hp(self.attached_player:get_hp()-damage)
     end,
     on_death = function(self, killer)
         self.attached_player:set_hp(0)
         vehicles.get_out(self.object:get_attach():get_luaentity(), self)
-    end
+    end]]
 })
 
 minetest.register_entity(MOD_NAME .. ":dummy_passenger", {
@@ -137,15 +138,16 @@ minetest.register_entity(MOD_NAME .. ":dummy_passenger", {
     visual = "mesh",
     mesh = "passenger.b3d",
     textures = {"character.png"},
+    static_save = false,
     --collisionbox = {-0.3, 0.0, -0.3, 0.3, 1.7, 0.3},
     --[[on_activate = function(self, staticdata, dtime_s)
     end,]]
-    on_punch = function(self, puncher, time_from_last_punch, tool_capabilities, dir, damage)
+    --[[on_punch = function(self, puncher, time_from_last_punch, tool_capabilities, dir, damage)
         self.attached_player:set_hp(self.attached_player:get_hp()-damage)
     end,
     on_death = function(self, killer)
         self.attached_player:set_hp(0)
         vehicles.get_out(self.object:get_attach():get_luaentity(), self)
-    end
+    end]]
 })
 	

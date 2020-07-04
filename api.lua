@@ -68,7 +68,8 @@ vehicles.register_vehicle = function(name, base_props, wheel_props)
             seat.radius = seat.radius or 0.5
         end
 		self.wheels = {}
-		self.tracf_dir = 0   -- specifies a modulo and direction of the vehicle traction force (> 0 on forward, < 0 on backward, = 0 on stay)
+		self.move_dir = 0   -- specifies direction of the vehicle movement (1 is forward, -1 is backward)
+        self.tracf = 0      -- specifies direction of the traction force and contains its value (> 0 is forward, < 0 is backward, =0 is stay)
 		
         --[[if base_props.obj.player_model_def then
             self.player_models = {}
@@ -95,41 +96,65 @@ vehicles.register_vehicle = function(name, base_props, wheel_props)
         if drv_name then
             local player = minetest.get_player_by_name(drv_name)
             local ctrls = player:get_player_control()
-            local entity_def = minetest.registered_entities[self.name]
             if ctrls.up then
-                self.tracf_dir = entity_def.traction_force
-            else
-                self.tracf_dir = 0
+                minetest.debug("Going forward...")
+                self.move_dir = 1
+                self.tracf = 1
             end
             if ctrls.down then
-                self.tracf_dir = -entity_def.traction_force
-            elseif not ctrls.down and not ctrls.up then
-                self.tracf_dir = 0
+                minetest.debug("Going backward...")
+                self.move_dir = -1
+                self.tracf = -1            
             end
+            if not ctrls.up and not ctrls.down then
+                minetest.debug("Stopping...")
+                self.tracf = 0
+            end
+            --[[if not ctrls.up or not ctrls.down then
+                self.tracf = 0
+            end]]
         end
+        
+        local v3d_v = self.object:get_velocity()
+        local v2d_v = {x=v3d_v.x, y=0, z=v3d_v.z}
+        --minetest.debug("yaw: " .. self.object:get_yaw())
+        --minetest.debug("velocity: " .. dump(v3d_v))
+        local v2d_vl = vehicles.v2d_length(v2d_v)
+        if v2d_vl < 0.4 and v2d_vl > 0 and self.tracf == 0 then
+            minetest.debug("Stopped!")
+            self.move_dir = 0
+        end
+                                                                   
         local yaw = self.object:get_yaw()
-        local tdir_v = vehicles.v2d_coords(self.tracf_dir, yaw)
+        local entity_def = minetest.registered_entities[self.name]
+        local tdir_v = vehicles.v2d_coords(self.tracf*entity_def.traction_force, yaw)
         tdir_v.y = 0
 		local max_fcoef = vehicles.max_fric_coef(self)
-		local edef = minetest.registered_entities[self.name]
-        local v2d_v = self.object:get_velocity()
-        local v2d_vl = vector.length(v2d_v)
-        local unit_v2d_v = vector.divide(v2d_v, v2d_vl)
+        local unit_v2d_v = vector.normalize(v2d_v)
         unit_v2d_v = vehicles.check_for_nan(unit_v2d_v)
                 
-        local tdir_sign = vehicles.get_sign(self.tracf_dir)
-        local sf_fforce = (math.abs(vehicles.gravity)*edef.mass)*max_fcoef*(-tdir_sign)   -- surface friction force
+        --local tdir_sign = vehicles.get_sign(self.tracf_dir)
+        local sf_fforce = (math.abs(vehicles.gravity)*entity_def.mass)*max_fcoef*(-self.move_dir)   -- surface friction force
         local sf_fforce_v = vector.multiply(unit_v2d_v, sf_fforce)
         sf_fforce_v = vehicles.check_for_nan(sf_fforce_v)
-		local air_rforce = v2d_vl^2 * vehicles.air_rfac * (-tdir_sign)          -- air resistance force
+		local air_rforce = v2d_vl^2 * vehicles.air_rfac * (-self.move_dir)          -- air resistance force
         local air_rforce_v = vector.multiply(unit_v2d_v, air_rforce)  
         air_rforce_v = vehicles.check_for_nan(air_rforce_v)
+        if self.move_dir == 0 then
+            minetest.debug("tdir_v: " .. dump(tdir_v))
+            minetest.debug("sf_fforce_v: " .. dump(sf_fforce_v))
+            minetest.debug("air_rforce_v: " .. dump(air_rforce_v))
+        end
         --[[local sf_fforce_sign = vehicles.get_sign(sf_fforce)
 		if tdir_sign == sf_fforce_sign then 
             sf_fforce = -sf_fforce 
             air_rforce = -air_rforce 
         end]]
-		
+		--[[if self.tracf_dir ~= 0 then
+            minetest.debug("self.tracf_dir: " .. self.tracf_dir)
+            minetest.debug("sf_fforce: " .. sf_fforce)
+            minetest.debug("air_rforce: " .. air_rforce)
+        end]]
         --[[minetest.debug("tdir_v: " .. dump(tdir_v))
         minetest.debug("sf_fforce: " .. sf_fforce)
         minetest.debug("sf_fforce_v: " .. dump(sf_fforce_v))
@@ -138,7 +163,8 @@ vehicles.register_vehicle = function(name, base_props, wheel_props)
         minetest.debug("tdir_v+sf_fforce_v: " .. dump(vector.add(tdir_v, sf_fforce_v)))
         minetest.debug("(tdir_v+sf_fforce_v)+air_rforce_v: " .. dump(vector.add(vector.add(tdir_v, sf_fforce_v), air_rforce_v)))
         minetest.debug("((tdir_v+sf_fforce_v)+air_rforce_v)/edef.mass: " .. dump(vector.divide(vector.add(vector.add(tdir_v, sf_fforce_v), air_rforce_v), edef.mass)))]]
-        local acc = vector.divide(vector.add(vector.add(tdir_v, sf_fforce_v), air_rforce_v), edef.mass)
+        local acc = vector.divide(vector.add(vector.add(tdir_v, sf_fforce_v), air_rforce_v), entity_def.mass)
+        acc.y = vehicles.gravity
 		--local acc_sum = (self.tracf_dir + sf_fforce + air_rforce)/edef.mass
         --minetest.debug(acc_sum)
 		--local acc2d = vehicles.v2d_coords(acc_sum, self.object:get_yaw())
@@ -151,13 +177,16 @@ vehicles.register_vehicle = function(name, base_props, wheel_props)
 		--self.object:set_acceleration({x=acc2d.x, y=self.object:get_acceleration().y, z=acc2d.z})
 		
 		for i, d in ipairs(self.wheels) do
-			d.object:set_rotation({x=vehicles.calc_angle_vel(self.object:get_velocity(), d.radius)*dtime, y=0, z=0})
+			d.object:set_rotation({x=vehicles.calc_angle_vel(vehicles.v2d_length(self.object:get_velocity()), d.radius)*dtime, y=0, z=0})
+            --minetest.debug("wheels rotation: " .. dump(d.object:get_rotation()))
 		end
 		
 	end,
 	on_death = function(self, killer)
 		for i, sdata in ipairs(self.seats) do
-			vehicles.get_out(self, sdata.dplayer_obj:get_luaentity(), i)
+            if sdata.is_busy then
+                vehicles.get_out(self, sdata.dplayer_obj:get_luaentity(), i)
+            end
 		end
 		for n, obj in pairs(vehicles.showed_seats_fspecs) do
 			if obj == self.object then
@@ -368,10 +397,11 @@ vehicles.sit = function(self, player, seat_id)     -- seat_id is an id of a seat
     dummy_player:set_attach(self.object, "", sel_seat.pos, {x=0, y=180, z=0})
     minetest.debug("attaching_dummy_player...")
     player:set_attach(dummy_player, "", {x=0, y=0, z=0}, {x=0, y=0, z=0})
-    player:set_properties({is_visible=false})
     minetest.debug("dummy_player_attached!")
     local dplayer_self = dummy_player:get_luaentity()
     dplayer_self.attached_player = player
+    dplayer_self.last_visual_size = player:get_properties().visual_size
+    player:set_properties({visual_size = vector.new(0, 0, 0)})
     player:set_look_horizontal(self.object:get_yaw()+180)
       --local anim = player_api.get_animation(player)
       --[[local pl_appear = minetest.registered_entities[self.name].player_sit_appearance
@@ -401,7 +431,7 @@ vehicles.get_out = function(self, dplayer, seat_id)
       
       dplayer.object:set_detach()
       dplayer.attached_player:set_detach()
-      dplayer.attached_player:set_properties({is_visible=true})
+      dplayer.attached_player:set_properties({visual_size = dplayer.last_visual_size})
       dplayer.object:remove()
       self.seats[seat_id].is_busy = nil
       self.seats[seat_id].dplayer_obj = nil
@@ -436,6 +466,11 @@ vehicles.on_formspec_event = function(player, formname, fields)
                     vehicles.close_seats_formspec(self, plname, formname, "get_up", i)
                     return true
                 end
+           end
+           
+           if fields.quit then
+               vehicles.close_seats_formspec(self, plname, formname)
+               return true
            end
       else     --   supposed that vehicle is died while the player is viewing the formspec
            vehicles.close_seats_formspec(self, plname, formname)
@@ -604,9 +639,8 @@ vehicles.get_sign = function(n)
 end
 
 --   Calculates an angle speed (in rads) of the wheel
-vehicles.calc_angle_vel = function(vel, radius)  
-    local v_len = vector.length(vel)
-    return v_len/radius
+vehicles.calc_angle_vel = function(vel_l, radius)  
+    return vel_l
 end
 
 --vehicles.rotate_acc_vect = function(old_acc, turn_ang)
@@ -691,6 +725,7 @@ minetest.register_on_leaveplayer(function(obj, timed_out)
         end
 end)
       
+
       
       
       
